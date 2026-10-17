@@ -1,5 +1,5 @@
 """
-서울 기온 트렌드 Streamlit 앱 (오류 수정판)
+서울 기온 트렌드 Streamlit 앱 (최종 수정판)
 
 - CSV 파일 경로를 여러 위치에서 자동 탐색
 - 못 찾으면 파일 업로드로 데이터 로드
@@ -74,12 +74,19 @@ def load_data() -> pd.DataFrame:
 
 df = load_data()
 
+# 열 이름 검증 (CSV 구조가 다른 경우 바로 알려주기 위함)
+expected_cols = {"날짜", "지점", "평균기온(℃)", "최저기온(℃)", "최고기온(℃)"}
+missing = expected_cols - set(df.columns)
+if missing:
+    st.error(f"CSV 열 이름이 예상과 다릅니다. 발견된 열: {list(df.columns)}")
+    st.stop()
+
 # 연도별 연평균기온 및 5년 이동평균
 yearly = (
     df.groupby(df["날짜"].dt.year)["평균기온(℃)"]
     .mean()
     .reset_index(name="연평균기온")
-    .rename(columns={"날짜": "연도"})      # <- 여기서 "날짜" -> "연도" 변경
+    .rename(columns={"날짜": "연도"})      # <- <<< 핵심 수정
     .sort_values("연도")
 )
 yearly["5년 이동평균"] = yearly["연평균기온"].rolling(window=5, center=True).mean()
