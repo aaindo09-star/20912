@@ -1,36 +1,28 @@
 """
-서울 기온 트렌드 Streamlit 앱
+서울 기온 트렌드 Streamlit 앱 (수정판)
 
-- 연도별로 연평균기온 꺾은선 + 5년 이동평균
-- 사이드바: 결측치 있는 연도 제외 옵션
-- 사이드바: 연도 범위 슬라이더
-- 선택 구간 평균/최저/최고 기온 표시
-
-실행 방법:
+- 평균/최저/최고 기온 범위와 연도 구간을 화면(메인)에 배치
+- 구간(연도/월/계절)별 분석
+- 차트: 선 / 막대 / 히트맵 / 3D 산점도
+실행:
     pip install -r requirements.txt
     streamlit run app.py
 """
 
 from __future__ import annotations
 
-import calendar
-
 import pandas as pd
-import plotly.graph_objects as go
+import plotly.express as px
 import streamlit as st
 
 st.set_page_config(page_title="서울 기온 트렌드", layout="wide")
 
-# ---------------------------------------------------------------
-# 데이터 로드 (탭 문자 처리 포함)
-# ---------------------------------------------------------------
+
 @st.cache_data
 def load_data(path: str = "seoul_temperature.csv") -> pd.DataFrame:
     df = pd.read_csv(path, encoding="utf-8-sig")
 
-    # 날짜 값 앞의 탭 문자("	1907-10-01") 제거
-    # - 따옴표 제거 후 .str.strip()으로 앞뒤 공백·탭 제거
-    # - 변환 불가(빈 값 등) 행은 NaT 처리 후 제거
+    # 날짜 앞의 탭/따옴표 제거 후 datetime 변환
     df["날짜"] = (
         df["날짜"]
         .astype(str)
@@ -39,144 +31,117 @@ def load_data(path: str = "seoul_temperature.csv") -> pd.DataFrame:
     )
     df["날짜"] = pd.to_datetime(df["날짜"], errors="coerce")
     df = df.dropna(subset=["날짜"]).reset_index(drop=True)
+
     df["연도"] = df["날짜"].dt.year
+    df["월"] = df["날짜"].dt.month
+    df["계절"] = df["월"].map({
+        12: "겨울", 1: "겨울", 2: "겨울",
+        3: "봄", 4: "봄", 5: "봄",
+        6: "여름", 7: "여름", 8: "여름",
+        9: "가을", 10: "가을", 11: "가을",
+    })
     return df
-
-
-def format_years(years) -> str:
-    """[1950, 1951, 1952, 1953, 2026] -> '1950~1953, 2026'"""
-    parts, start, prev = [], None, None
-    for y in sorted(years):
-        if start is None:
-            start = prev = y
-        elif y == prev + 1:
-            prev = y
-        else:
-            parts.append(str(start) if start == prev else f"{start}~{prev}")
-            start = prev = y
-    if start is not None:
-        parts.append(str(start) if start == prev else f"{start}~{prev}")
-    return ", ".join(parts)
 
 
 df = load_data()
 
-# 필요 열 확인
-for col in ["날짜", "연도", "평균기온(℃)", "최저기온(℃)", "최고기온(℃)"]:
-    if col not in df.columns:
-        st.error(f"CSV에 필요한 열이 없습니다: {col}. 발견된 열: {list(df.columns)}")
-        st.stop()
+# 기온 범위 기본값 (자료의 10~90 백분위)
+avg_l, avg_h = df["평균기온(℃)"].quantile([0.1, 0.9])
+min_l, min_h = df["최저기온(℃)"].quantile([0.1, 0.9])
+max_l, max_h = df["최고기온(℃)"].quantile([0.1, 0.9])
 
-# ---------------------------------------------------------------
-# 연도별 연평균기온 + 결측 여부
-#   - 완전한 연도: 그 해의 모든 날(365/366일)에 평균기온 값이 있음
-#   - 날짜 행이 없거나, 평균기온이 비어 있으면 결측 연도
-# ---------------------------------------------------------------
-year_stats = (
-    df.groupby("연도")["평균기온(℃)"]
-    .agg(["mean", "count"])
-    .reset_index()
+# ---------- 메인 화면 설정 (사이드바 아님) ----------
+st.subheader("설정")
+
+# 기간
+min_year, max_year = int(df["연도"].min()), int(df["연도"].max())
+year_range = st.slider("연도 범위", min_year, max_year, (min_year, max_year))
+
+# 기온 범위
+avg_range = st.slider(
+    "평균기온(℃) 범위", float(avg_l), float(avg_h),
+    (float(avg_l), float(avg_h)),
 )
-year_stats.columns = ["연도", "연평균기온", "유효일수"]
-
-year_stats["연일수"] = [
-    366 if calendar.isleap(y) else 365 for y in year_stats["연도"]
-]
-year_stats["완전연도"] = year_stats["유효일수"] == year_stats["연일수"]
-
-yearly = year_stats.sort_values("연도").reset_index(drop=True)
-
-# ---------------------------------------------------------------
-# 사이드바: 결측 연도 제외 옵션
-# ---------------------------------------------------------------
-exclude_incomplete = st.sidebar.checkbox(
-    "결측치가 있는 연도 제외",
-    value=True,
-    help=(
-        "평균기온이 하루라도 비어 있거나 날짜 자체가 없는 연도를 "
-        "그래프·이동평균·통계에서 뺍니다. 끄면 있는 날짜만으로 평균을 냅니다."
-    ),
+min_range = st.slider(
+    "최저기온(℃) 범위", float(min_l), float(min_h),
+    (float(min_l), float(min_h)),
+)
+max_range = st.slider(
+    "최고기온(℃) 범위", float(max_l), float(max_h),
+    (float(max_l), float(max_h)),
 )
 
-if exclude_incomplete:
-    yearly.loc[~yearly["완전연도"], "연평균기온"] = float("nan")
+# 구간(그룹) 기준
+seg_option = st.selectbox("구간(그룹) 기준", ["연도", "월", "계절"])
 
-# 5년 이동평균 (연평균기온 기준, 중심 이동, 5개 연도가 모두 있을 때만 계산)
-yearly["5년 이동평균"] = yearly["연평균기온"].rolling(window=5, center=True).mean()
+# 차트 종류
+chart_type = st.selectbox("차트 종류", ["선", "막대", "히트맵", "3D 산점도"])
 
-# ---------------------------------------------------------------
-# 사이드바: 연도 범위 슬라이더
-# ---------------------------------------------------------------
-slider_pool = yearly[yearly["완전연도"]] if exclude_incomplete else yearly
-min_year, max_year = int(slider_pool["연도"].min()), int(slider_pool["연도"].max())
-selected = st.sidebar.slider(
-    "연도 범위",
-    min_value=min_year,
-    max_value=max_year,
-    value=(min_year, max_year),
-    help="슬라이더를 움직여 분석 구간을 선택하세요.",
-)
+# ---------- 필터 ----------
+in_range = (df["연도"] >= year_range[0]) & (df["연도"] <= year_range[1])
+avg_f = (df["평균기온(℃)"] >= avg_range[0]) & (df["평균기온(℃)"] <= avg_range[1])
+min_f = (df["최저기온(℃)"] >= min_range[0]) & (df["최저기온(℃)"] <= min_range[1])
+max_f = (df["최고기온(℃)"] >= max_range[0]) & (df["최고기온(℃)"] <= max_range[1])
+df_f = df[in_range & avg_f & min_f & max_f].copy()
 
-# 선택 구간 데이터
-in_range = (df["연도"] >= selected[0]) & (df["연도"] <= selected[1])
-if exclude_incomplete:
-    complete_years = yearly.loc[yearly["완전연도"], "연도"]
-    in_range &= df["연도"].isin(complete_years)
-selected_df = df[in_range]
+# ---------- 구간별 통계 (메인 화면) ----------
+y1, y2 = year_range
+sel = df[(df["연도"] >= y1) & (df["연도"] <= y2)]
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.metric("평균기온 평균", f"{sel['평균기온(℃)'].mean():.2f} ℃")
+with c2:
+    st.metric("최저기온 최저", f"{sel['최저기온(℃)'].min():.2f} ℃")
+with c3:
+    st.metric("최고기온 최고", f"{sel['최고기온(℃)'].max():.2f} ℃")
 
-year_range = yearly[
-    (yearly["연도"] >= selected[0]) & (yearly["연도"] <= selected[1])
-]
-incomplete_in_range = year_range.loc[~year_range["완전연도"], "연도"].tolist()
+# ---------- 차트 ----------
+st.subheader("그래프")
 
-# 선택 구간 통계 (평균/최저/최고)
-c1, c2, c3 = st.sidebar.columns(3)
-c1.metric("평균기온", f"{selected_df['평균기온(℃)'].mean():.2f} ℃")
-c2.metric("최저기온", f"{selected_df['최저기온(℃)'].min():.2f} ℃")
-c3.metric("최고기온", f"{selected_df['최고기온(℃)'].max():.2f} ℃")
-
-# ---------------------------------------------------------------
-# 그래프
-# ---------------------------------------------------------------
-st.title("서울 연평균기온 추이")
-st.caption(f"표시 구간: {selected[0]}년 ~ {selected[1]}년")
-
-if incomplete_in_range:
-    if exclude_incomplete:
-        st.caption(f"결측치로 제외된 연도: {format_years(incomplete_in_range)}")
-    else:
-        st.caption(
-            f"결측치가 있는 연도 포함 (있는 날짜만으로 평균 계산): "
-            f"{format_years(incomplete_in_range)}"
+if df_f.empty:
+    st.warning("표시할 데이터가 없습니다. 연도나 기온 범위를 조정해 주세요.")
+else:
+    if chart_type == "선":
+        yearly_avg = df_f.groupby("연도")["평균기온(℃)"].mean().reset_index()
+        fig = px.line(
+            yearly_avg, x="연도", y="평균기온(℃)", markers=True,
+            labels={"연도": "연도", "평균기온(℃)": "평균기온(℃)"},
+            title="연도별 평균기온",
         )
+        fig.update_layout(margin=dict(l=40, r=20, t=40, b=40), height=450)
 
-fig = go.Figure()
-fig.add_trace(
-    go.Scatter(
-        x=year_range["연도"],
-        y=year_range["연평균기온"],
-        mode="lines+markers",
-        name="연평균기온",
-        line=dict(color="#1f77b4", width=2),
-        connectgaps=False,
-    )
-)
-fig.add_trace(
-    go.Scatter(
-        x=year_range["연도"],
-        y=year_range["5년 이동평균"],
-        mode="lines",
-        name="5년 이동평균",
-        line=dict(color="#d62728", width=2, dash="dash"),
-        connectgaps=False,
-    )
-)
+    elif chart_type == "막대":
+        if seg_option == "연도":
+            grp = df_f.groupby("연도")["평균기온(℃)"].mean().reset_index()
+        elif seg_option == "월":
+            grp = df_f.groupby("월")["평균기온(℃)"].mean().reset_index()
+            grp = grp.rename(columns={"월": "월", "평균기온(℃)": "평균기온(℃)"})
+        else:
+            grp = df_f.groupby("계절")["평균기온(℃)"].mean().reset_index()
+        fig = px.bar(
+            grp, x=grp.columns[0], y="평균기온(℃)",
+            title="구간별 평균기온",
+            labels={grp.columns[0]: "구간", "평균기온(℃)": "평균기온(℃)"},
+        )
+        fig.update_layout(margin=dict(l=40, r=20, t=40, b=40), height=450)
 
-fig.update_layout(
-    xaxis_title="연도",
-    yaxis_title="기온 (℃)",
-    hovermode="x unified",
-    margin=dict(l=40, r=20, t=40, b=40),
-    height=520,
-)
-st.plotly_chart(fig, use_container_width=True)
+    elif chart_type == "히트맵":
+        piv = df_f.pivot_table(
+            index="월", columns="연도", values="평균기온(℃)", aggfunc="mean"
+        )
+        fig = px.imshow(
+            piv, aspect="auto",
+            labels={"x": "연도", "y": "월", "color": "평균기온(℃)"},
+            title="월 × 연도 히트맵 (평균기온)",
+        )
+        fig.update_layout(margin=dict(l=60, r=20, t=40, b=40), height=450)
+
+    elif chart_type == "3D 산점도":
+        fig = px.scatter_3d(
+            df_f, x="연도", y="월", z="평균기온(℃)",
+            color="평균기온(℃)", opacity=0.5,
+            title="3D 산점도 (연도 × 월 × 평균기온)",
+        )
+        fig.update_layout(margin=dict(l=60, r=20, t=40, b=40), height=450)
+
+    st.plotly_chart(fig, use_container_width=True)
