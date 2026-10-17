@@ -1,16 +1,16 @@
 """
 서울 기온 트렌드 Streamlit 앱
+- 연도별로 연평균기온 꺾은선 그래프 표시
+- 5년 이동평균선을 같은 그래프에 겹쳐서 표시
+- 사이드바 연도 범위 슬라이더
+- 선택 구간의 평균/최저/최고 기온 표시
 
-- CSV 경로를 자동 탐색하고, 없으면 업로드
-- 날짜 앞의 탭/따옴표 제거 후 datetime 변환
-- 연도별 연평균기온 + 5년 이동평균 그래프
-- 사이드바 연도 슬라이더와 구간 통계
+실행 방법:
+    pip install -r requirements.txt
+    streamlit run seoul_temperature_streamlit.py
 """
 
 from __future__ import annotations
-
-import glob
-import os
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -18,36 +18,16 @@ import streamlit as st
 
 st.set_page_config(page_title="서울 기온 트렌드", layout="wide")
 
+# ---------------------------------------------------------------
+# 데이터 로드 (탭 문자 처리 포함)
+# ---------------------------------------------------------------
+@st.cache_data
+def load_data(path: str = "seoul_temperature.csv") -> pd.DataFrame:
+    df = pd.read_csv(path, encoding="utf-8-sig")
 
-def find_csv() -> str | None:
-    candidates = [
-        "seoul_temperature.csv",
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "seoul_temperature.csv"),
-        "/mnt/data/seoul_temperature.csv",
-        "/mount/src/20261017/seoul_temperature.csv",
-        "/mount/src/20261017_/seoul_temperature.csv",
-    ]
-    for path in candidates:
-        if os.path.exists(path):
-            return path
-
-    matches = glob.glob("**/seoul_temperature.csv", recursive=True)
-    return matches[0] if matches else None
-
-
-def load_data() -> pd.DataFrame:
-    path = find_csv()
-
-    if path is None:
-        st.error("seoul_temperature.csv 파일을 찾을 수 없습니다. 파일을 올려주세요.")
-        uploaded = st.file_uploader("CSV 파일 업로드", type="csv")
-        if uploaded is None:
-            st.stop()
-        df = pd.read_csv(uploaded, encoding="utf-8-sig")
-    else:
-        st.info(f"데이터를 찾습니다: {path}")
-        df = pd.read_csv(path, encoding="utf-8-sig")
-
+    # 주의: 날짜 값 앞에 탭 문자("	1907-10-01")가 있음
+    # - 따옴표 제거 후 .str.strip()으로 앞뒤 공백·탭 제거
+    # - datetime으로 변환
     df["날짜"] = (
         df["날짜"]
         .astype(str)
@@ -57,29 +37,25 @@ def load_data() -> pd.DataFrame:
     df["날짜"] = pd.to_datetime(df["날짜"])
     return df
 
-
 df = load_data()
 
-# 열 이름 검증
-expected_cols = {"날짜", "지점", "평균기온(℃)", "최저기온(℃)", "최고기온(℃)"}
-missing = expected_cols - set(df.columns)
-if missing:
-    st.error(f"CSV 열 이름이 예상과 다릅니다. 발견된 열: {list(df.columns)}")
-    st.stop()
-
-# 연도별 연평균기온 + 5년 이동평균
+# ---------------------------------------------------------------
+# 연도별 연평균기온 및 5년 이동평균
+# ---------------------------------------------------------------
 yearly = (
-    df.groupby(df["날짜"].dt.year)["평균기온(℃)"]
+    df.groupby(df["날짜"].dt.year.rename("연도"))["평균기온(℃)"]
     .mean()
     .reset_index(name="연평균기온")
+    .sort_values("연도")
+    .reset_index(drop=True)
 )
 
-# 원본 열 이름과 무관하게 열 이름을 직접 지정 (KeyError 방지)
-yearly.columns = ["연도", "연평균기온"]
-yearly = yearly.sort_values("연도").reset_index(drop=True)
+# 5년 이동평균 (연평균기온 기준, 중심 이동)
 yearly["5년 이동평균"] = yearly["연평균기온"].rolling(window=5, center=True).mean()
 
-# 사이드바 연도 슬라이더
+# ---------------------------------------------------------------
+# 사이드바: 연도 범위 슬라이더
+# ---------------------------------------------------------------
 min_year, max_year = int(yearly["연도"].min()), int(yearly["연도"].max())
 selected = st.sidebar.slider(
     "연도 범위",
@@ -103,7 +79,9 @@ c1.metric("평균기온", f"{selected_df['평균기온(℃)'].mean():.2f} ℃")
 c2.metric("최저기온", f"{selected_df['최저기온(℃)'].min():.2f} ℃")
 c3.metric("최고기온", f"{selected_df['최고기온(℃)'].max():.2f} ℃")
 
+# ---------------------------------------------------------------
 # 그래프
+# ---------------------------------------------------------------
 st.title("서울 연평균기온 추이")
 st.caption(f"표시 구간: {selected[0]}년 ~ {selected[1]}년")
 
